@@ -1,19 +1,25 @@
 services:
   redis:
     image: redis:7-alpine
-    container_name: retention-redis
     restart: unless-stopped
     ports:
       - "6379:6379"
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - retention_redis_data:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 3s
       retries: 20
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   postgres:
     image: postgres:16-alpine
-    container_name: retention-postgres
     restart: unless-stopped
     environment:
       POSTGRES_DB: retention_db
@@ -29,13 +35,29 @@ services:
       interval: 5s
       timeout: 3s
       retries: 30
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   feature-worker:
     build:
       context: .
       dockerfile: Dockerfile.api
     restart: unless-stopped
-    command: ["python", "-m", "src.distributed.feature_worker", "--host", "0.0.0.0", "--port", "50051", "--max-workers", "4"]
+    command:
+      [
+        "python",
+        "-m",
+        "src.distributed.feature_worker",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "50051",
+        "--max-workers",
+        "4"
+      ]
     environment:
       PYTHONPATH: /app
       TZ: Asia/Seoul
@@ -43,32 +65,63 @@ services:
       - "50051"
     volumes:
       - .:/app
+    stop_grace_period: 20s
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import socket; s=socket.create_connection(('localhost',50051),3); s.close()\""]
+      test: ["CMD-SHELL", "python -c \"import socket; s=socket.create_connection(('127.0.0.1',50051),3); s.close()\""]
       interval: 10s
       timeout: 5s
       retries: 30
       start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 512M
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   roi-worker:
     build:
       context: .
       dockerfile: Dockerfile.api
     restart: unless-stopped
-    command: ["bash", "-lc", "./scripts/build_openmp_roi.sh && python -m src.distributed.roi_worker --host 0.0.0.0 --port 50052 --max-workers 4"]
+    command:
+      [
+        "bash",
+        "-lc",
+        "./scripts/build_openmp_roi.sh && python -m src.distributed.roi_worker --host 0.0.0.0 --port 50052 --max-workers 4"
+      ]
     environment:
       PYTHONPATH: /app
       TZ: Asia/Seoul
+      OMP_NUM_THREADS: "4"
+      OMP_PROC_BIND: "false"
     expose:
       - "50052"
     volumes:
       - .:/app
+    stop_grace_period: 30s
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import socket; s=socket.create_connection(('localhost',50052),3); s.close()\""]
+      test: ["CMD-SHELL", "python -c \"import socket; s=socket.create_connection(('127.0.0.1',50052),3); s.close()\""]
       interval: 10s
       timeout: 5s
       retries: 30
       start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 3G
+        reservations:
+          memory: 1G
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   api:
     build:
@@ -105,11 +158,12 @@ services:
       - "8000"
     volumes:
       - .:/app
+    stop_grace_period: 30s
     healthcheck:
       test:
         [
           "CMD-SHELL",
-          "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3).read()\""
+          "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).read()\""
         ]
       interval: 10s
       timeout: 5s
@@ -121,10 +175,14 @@ services:
           memory: 4G
         reservations:
           memory: 1G
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   api-lb:
     image: nginx:1.27-alpine
-    container_name: retention-api-lb
     restart: unless-stopped
     depends_on:
       api:
@@ -133,18 +191,23 @@ services:
       - "8000:8000"
     volumes:
       - ./deploy/nginx.conf:/etc/nginx/nginx.conf:ro
+    stop_grace_period: 10s
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:8000/health >/dev/null 2>&1"]
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8000/health >/dev/null 2>&1 || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 30
-      start_period: 10s
+      start_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   dashboard:
     build:
       context: .
       dockerfile: Dockerfile.dashboard
-    container_name: retention-dashboard
     restart: unless-stopped
     depends_on:
       api-lb:
@@ -163,11 +226,12 @@ services:
       - "8501:8501"
     volumes:
       - .:/app
+    stop_grace_period: 30s
     healthcheck:
       test:
         [
           "CMD-SHELL",
-          "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8501/_stcore/health', timeout=3).read()\""
+          "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8501/_stcore/health', timeout=3).read()\""
         ]
       interval: 10s
       timeout: 5s
@@ -179,6 +243,12 @@ services:
           memory: 6G
         reservations:
           memory: 2G
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 volumes:
   retention_postgres_data:
+  retention_redis_data:
