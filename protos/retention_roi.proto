@@ -1,0 +1,18 @@
+syntax = "proto3";
+
+package retention_roi;
+
+// Logical API contract for the JSON-over-gRPC implementation in src/distributed.
+// The implementation uses gRPC generic handlers so that the project remains easy to run
+// without generated protobuf files, while the service boundary and methods are explicit.
+service FeatureService {
+  rpc ExtractFeatures(JsonEnvelope) returns (JsonEnvelope);
+}
+
+service RoiService {
+  rpc ScoreRoi(JsonEnvelope) returns (JsonEnvelope);
+}
+
+message JsonEnvelope {
+  bytes payload = 1;
+}
