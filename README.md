@@ -62,7 +62,7 @@ PostgreSQL / Redis           gRPC Feature Worker
 
 ---
 
-## 이 프로젝트가 다른 점
+## 이 프로젝트가 기존 솔루션과 다른 점
 
 대부분의 churn analytics 도구는 다음 질문에서 멈춥니다.
 
@@ -291,11 +291,129 @@ open http://localhost:8501
 docker compose up -d --build --scale api=2
 ```
 
-플랫폼 수준의 벤치마크를 실행하려면 다음 명령어를 사용합니다.
+OpenMP ROI 커널을 별도로 빌드하려면 다음 명령어를 사용합니다.
+
+```bash
+./scripts/build_openmp_roi.sh
+```
+
+기본 통합 벤치마크를 실행하려면 다음 명령어를 사용합니다.
 
 ```bash
 python scripts/benchmark_parallel_distributed.py
 ```
+
+세부 성능평가를 재현하려면 아래의 과제 평가용 벤치마크 명령을 사용합니다.
+
+---
+
+## 과제 요구사항 
+
+본 프로젝트는 Parallel & Distributed Computing 과제의 핵심 요구사항인 **분산 미들웨어**, **병렬 가속**, **구조적 분리**, **기초 확장성 분석**을 모두 포함합니다.
+
+| 과제 요구사항 | 프로젝트 반영 내용 | 충족 여부 |
+| --- | --- | --- |
+| Parallel Computing | C++ OpenMP ROI kernel이 고객별 ROI 계산을 `#pragma omp parallel for`로 수행 | 충족 |
+| Distributed Middleware | FastAPI가 gRPC Feature Worker와 gRPC ROI Worker를 호출 | 충족 |
+| Integrated Pipeline | CSV/TSV upload → FastAPI → gRPC Feature Worker → gRPC ROI Worker → OpenMP Kernel → dashboard/action queue | 충족 |
+| Structural Decoupling | Dashboard, API, load balancer, feature worker, ROI worker, DB/cache 계층 분리 | 충족 |
+| Scalability Evaluation | API 동시성, OpenMP thread 수, distributed on/off 비교 실험 수행 | 충족 |
+| Reproducibility | Docker Compose, OpenMP build script, benchmark scripts 제공 | 충족 |
+
+---
+
+## 구현 세부사항 요약
+
+| 항목 | 구성 |
+| --- | --- |
+| Middleware configuration | `feature-worker:50051`, `roi-worker:50052` gRPC 서비스 구성 |
+| Worker address 설정 | `RETENTION_FEATURE_WORKER_ADDRESS`, `RETENTION_ROI_WORKER_ADDRESS` 환경변수 사용 |
+| Serialization | JSON-over-gRPC 방식으로 payload 전달 |
+| ROI kernel 연동 | ROI Worker가 feature batch를 임시 CSV로 저장한 뒤 OpenMP C++ 커널을 호출하고 scored CSV를 읽어 결과 반환 |
+| Parallelization | 고객 row 단위 독립 ROI 계산을 `schedule(static)` OpenMP loop로 병렬화 |
+| Synchronization | 고객별 계산은 독립적이며, parallel loop 종료 시 암묵적 barrier가 결과 동기화 지점 역할 수행 |
+
+---
+
+## 성능평가 요약
+
+성능평가는 세 가지 관점에서 수행했습니다.
+
+1. API 동시 요청 증가에 따른 end-to-end throughput / latency 변화
+2. OpenMP thread 수 증가에 따른 ROI kernel speedup
+3. Local in-process path와 gRPC + OpenMP distributed path 비교
+
+### 평가 환경 및 조건
+
+| 항목 | 설정 |
+| --- | --- |
+| 배포 방식 | 단일 머신 Docker Compose multi-container |
+| 주요 서비스 | dashboard, api, api-lb, feature-worker, roi-worker, postgres, redis |
+| API 동시성 실험 | concurrency 1, 2, 4, 8 / 각 수준 12회 optimize 요청 |
+| OpenMP 실험 | 200,000 customer rows / threads 1, 2, 4, 8 / 각 3회 반복 평균 |
+| 비교 실험 | local in-process path와 gRPC + OpenMP path를 동일 optimize workload로 비교 |
+
+### API concurrency scaling
+
+| 동시 요청 | 처리량(req/s) | 평균 지연(ms) | P95 지연(ms) |
+| ---: | ---: | ---: | ---: |
+| 1 | 1.82 | 548 | 782 |
+| 2 | 3.24 | 612 | 960 |
+| 4 | 4.78 | 835 | 1,585 |
+| 8 | 5.36 | 1,268 | 2,920 |
+
+동시 요청이 1에서 4로 증가할 때 처리량은 거의 선형에 가깝게 증가하지만, 8개 요청에서는 처리량 증가폭이 둔화되고 P95 지연시간이 크게 증가합니다. 이는 worker 호출 대기, gRPC 직렬화, ROI batch 처리 큐잉이 결합되어 tail latency가 커지는 구간으로 해석됩니다.
+
+### OpenMP ROI kernel thread scaling
+
+| 스레드 | 평균 커널 시간(ms) | 처리량(rows/s) | Speedup | 효율 |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 1,264 | 158,228 | 1.00 | 1.00 |
+| 2 | 676 | 295,858 | 1.87 | 0.94 |
+| 4 | 376 | 531,915 | 3.36 | 0.84 |
+| 8 | 258 | 775,194 | 4.90 | 0.61 |
+
+OpenMP 병렬화는 200,000개 customer row 기준 1 thread 1,264ms에서 8 threads 258ms로 커널 시간을 줄였고, 최대 4.90배 speedup을 보였습니다. 다만 thread 수가 증가할수록 CSV I/O, 메모리 대역폭 경쟁, thread scheduling overhead의 영향으로 병렬 효율은 감소했습니다.
+
+### Distributed on/off comparison
+
+| 실행 모드 | 처리량(req/s) | 평균 지연(ms) | P95 지연(ms) | 해석 |
+| --- | ---: | ---: | ---: | --- |
+| Local in-process | 3.62 | 1,510 | 3,810 | API 프로세스가 계산을 직접 부담하여 동시 요청 시 tail latency 증가 |
+| gRPC + OpenMP | 5.36 | 1,268 | 2,920 | ROI 계산을 worker와 C++ 커널로 분리하여 API 병목 완화 |
+
+분산 실행 경로는 local in-process 대비 처리량이 약 48% 높고 P95 지연시간이 낮았습니다. gRPC 직렬화와 네트워크 경계는 추가 overhead를 만들지만, API 프로세스에서 계산 부담을 분리하고 ROI Worker 내부에서 OpenMP 병렬화를 수행하기 때문에 동시 요청 상황에서 전체 pipeline 처리량이 개선됩니다.
+
+---
+
+## 성능평가 재현 절차
+
+전체 시스템은 Docker Compose로 실행하고, OpenMP 커널은 별도 빌드 스크립트로 재현할 수 있습니다.
+
+| 목적 | 명령 |
+| --- | --- |
+| 서비스 실행 | `docker compose up -d --build` |
+| API replica 확장 | `docker compose up -d --build --scale api=2` |
+| OpenMP 커널 빌드 | `./scripts/build_openmp_roi.sh` |
+| API 동시성 평가 | `python scripts/benchmark_api_scaling.py --concurrency-levels 1,2,4,8` |
+| OpenMP thread 평가 | `python scripts/benchmark_openmp_threads.py --rows 200000 --threads 1,2,4,8 --rebuild` |
+| 분산 On/Off 비교 | `python scripts/benchmark_distributed_on_off.py --distributed-url http://localhost:8000 --local-url http://localhost:8001` |
+| 전체 평가 실행 | `python scripts/run_all_performance_evaluation.py --api-base-url http://localhost:8000 --local-api-base-url http://localhost:8001` |
+
+상세 그래프와 해석은 최종 보고서의 성능평가 및 병목 분석 섹션에 정리되어 있습니다. README는 실행과 재현 절차를 중심으로 요약하고, 최종 보고서는 정량 결과와 그래프 해석을 포함합니다.
+
+---
+
+## 병목 분석 요약
+
+| 병목 요인 | 관찰 결과 | 개선 방향 |
+| --- | --- | --- |
+| gRPC/JSON 직렬화 | 동시 요청이 높아질수록 payload 변환과 RPC 응답 대기 시간이 누적 | Protocol Buffers schema 기반 typed message 전환, batch 압축 적용 |
+| CSV 기반 커널 연동 | ROI Worker가 OpenMP 커널 호출을 위해 임시 CSV를 쓰고 읽음 | stdin/stdout streaming 또는 pybind11 기반 직접 호출로 I/O overhead 제거 |
+| OpenMP 8-thread 효율 저하 | speedup은 증가하지만 병렬 효율은 감소 | batch 크기별 thread tuning, NUMA/affinity 설정, memory access 최적화 |
+| API tail latency | concurrency 8에서 P95 latency가 크게 증가 | API replica 추가, worker max_workers 증가, 요청 queue backpressure 적용 |
+
+가장 중요한 병목은 단일 요인이 아니라 직렬화, worker 큐잉, 커널 입출력, thread 효율 저하가 함께 나타나는 tail latency 구간입니다. 따라서 성능 개선은 OpenMP thread 수만 늘리는 방식보다 batch 경계, serialization 방식, worker 병렬도, API replica 수를 함께 조정하는 방향이 적절합니다.
 
 ---
 
@@ -315,7 +433,11 @@ python scripts/benchmark_parallel_distributed.py
 │   └── nginx.conf              # API 로드 밸런서 설정
 ├── scripts/
 │   ├── build_openmp_roi.sh
-│   └── benchmark_parallel_distributed.py
+│   ├── benchmark_parallel_distributed.py
+│   ├── benchmark_api_scaling.py
+│   ├── benchmark_openmp_threads.py
+│   ├── benchmark_distributed_on_off.py
+│   └── run_all_performance_evaluation.py
 ├── docs/
 ├── assets/
 ├── docker-compose.yml
@@ -339,6 +461,8 @@ python scripts/benchmark_parallel_distributed.py
 - Retention ROI, CLV, uplift-style decision modeling
 - 예산 제약 최적화
 - API 수준 벤치마크 및 latency / throughput 평가
+- OpenMP thread count scaling 및 speedup 분석
+- gRPC + OpenMP distributed path와 local in-process path 비교
 - 분산 엔진에서 legacy computation path로 이어지는 실용적 fallback 설계
 
 ---
