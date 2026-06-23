@@ -355,7 +355,6 @@ python scripts/benchmark_parallel_distributed.py
 | [피처 사전](docs/feature_dictionary.md) | Feature 정의와 의미 |
 | [리텐션 전략](docs/retention_strategy.md) | 세그먼트 단위 리텐션 전략 및 비용 / 효과 가정 |
 | [Counterfactual Lab](docs/counterfactual_retention_lab.md) | 리텐션 액션별 expected profit 비교 |
-| [발표 자료](docs/presentation.pdf) | 프로젝트 발표 자료 |
 
 ---
 
