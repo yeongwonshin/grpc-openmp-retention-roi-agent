@@ -7,7 +7,7 @@
 이탈 예측을 넘어, 리텐션 예산을 **어디에·언제·어떤 방식으로 써야 하는지** 계산하는 운영형 Retention Intelligence Copilot입니다.  
 CSV/TSV 파일 하나를 업로드하면 고객 이탈 위험, 예상 이탈 시점, 개입 효과, 고객 가치, 예산 제약, 개인화 액션, 실시간 액션 큐까지 하나의 의사결정 흐름으로 연결합니다.
 
-[데모 영상](https://github.com/user-attachments/assets/a8b620c8-00bd-4ce2-9d33-da98e79b3fe2) · [차별화 전략](docs/product_differentiation.md) · [대시보드 의사결정 루프](docs/dashboard_decision_loop.md) · [의사결정 로직](docs/decision_logic.md) · [기술 문서](docs/technical_guide.md) · [발표 자료](docs/presentation.pdf)
+[데모 영상](https://github.com/user-attachments/assets/a8b620c8-00bd-4ce2-9d33-da98e79b3fe2) · [차별화 전략](docs/product_differentiation.md) · [대시보드 의사결정 루프](docs/dashboard_decision_loop.md) · [의사결정 로직](docs/decision_logic.md) · [기술 문서](docs/technical_guide.md) 
 
 </div>
 
